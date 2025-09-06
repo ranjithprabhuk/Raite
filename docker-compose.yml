@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: timescale/timescaledb:latest-pg15
+    container_name: raite-timescaledb
+    environment:
+      POSTGRES_DB: raite
+      POSTGRES_USER: raite_user
+      POSTGRES_PASSWORD: raite_password
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./src/database/init:/docker-entrypoint-initdb.d
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U raite_user -d raite']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

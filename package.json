@@ -1,0 +1,41 @@
+{
+  "name": "raite",
+  "version": "1.0.0",
+  "description": "Trading candle data management and paper trading backend",
+  "main": "src/index.ts",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "build": "bun build src/index.ts --outdir ./dist",
+    "db:migrate": "bun run src/database/migrations/migrate.ts",
+    "db:seed": "bun run src/database/seeds/seed.ts",
+    "lint": "eslint src/**/*.ts",
+    "test": "bun test"
+  },
+  "keywords": [
+    "trading",
+    "candles",
+    "paper-trading",
+    "timeseries"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@elysiajs/cors": "^0.8.0",
+    "@elysiajs/swagger": "^0.8.5",
+    "@sinclair/typebox": "^0.34.41",
+    "elysia": "^0.8.17",
+    "pg": "^8.11.3",
+    "uuid": "^9.0.1",
+    "zod": "^3.22.4"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "@types/pg": "^8.10.9",
+    "@types/uuid": "^9.0.7",
+    "@typescript-eslint/eslint-plugin": "^6.13.1",
+    "@typescript-eslint/parser": "^6.13.1",
+    "bun-types": "latest",
+    "eslint": "^8.54.0"
+  }
+}
