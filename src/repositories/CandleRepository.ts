@@ -1,5 +1,5 @@
 import { db } from '@/database/connection';
-import type { Candle, CandleData, CandleQueryParams } from '@/types';
+import type { Candle, CandleData, CandleQueryParams, OIInterpretation } from '@/types';
 
 export class CandleRepository {
   async insertCandles(instrument: string, timeframe: string, candles: CandleData[]): Promise<void> {
@@ -23,6 +23,37 @@ export class CandleRepository {
         close_price = EXCLUDED.close_price,
         volume = EXCLUDED.volume,
         open_interest = EXCLUDED.open_interest
+    `;
+
+    await db.query(query);
+  }
+
+  async insertCandlesWithOI(
+    instrument: string, 
+    timeframe: string, 
+    candlesWithOI: Array<{ candleData: CandleData; oiInterpretation?: OIInterpretation }>
+  ): Promise<void> {
+    if (candlesWithOI.length === 0) return;
+
+    const values = candlesWithOI
+      .map(({ candleData, oiInterpretation }) => {
+        const oiInterp = oiInterpretation ? `'${oiInterpretation}'` : 'NULL';
+        return `('${instrument}', '${timeframe}', ${candleData[0]}, ${candleData[1]}, ${candleData[2]}, ${candleData[3]}, ${candleData[4]}, ${candleData[5]}, ${candleData[6]}, ${oiInterp})`;
+      })
+      .join(',');
+
+    const query = `
+      INSERT INTO candles (instrument, timeframe, epoch_time, open_price, high_price, low_price, close_price, volume, open_interest, oi_interpretation)
+      VALUES ${values}
+      ON CONFLICT (instrument, timeframe, epoch_time) 
+      DO UPDATE SET
+        open_price = EXCLUDED.open_price,
+        high_price = EXCLUDED.high_price,
+        low_price = EXCLUDED.low_price,
+        close_price = EXCLUDED.close_price,
+        volume = EXCLUDED.volume,
+        open_interest = EXCLUDED.open_interest,
+        oi_interpretation = EXCLUDED.oi_interpretation
     `;
 
     await db.query(query);
@@ -121,5 +152,38 @@ export class CandleRepository {
 
     const result = await db.query(query, params);
     return result.rowCount || 0;
+  }
+
+  async getCandleById(id: number): Promise<Candle | null> {
+    const query = `SELECT * FROM candles WHERE id = $1`;
+    const result = await db.query(query, [id]);
+    return result.rows[0] || null;
+  }
+
+  async getPreviousCandle(instrument: string, timeframe: string, epochTime: number): Promise<Candle | null> {
+    const query = `
+      SELECT * FROM candles 
+      WHERE instrument = $1 AND timeframe = $2 AND epoch_time < $3
+      ORDER BY epoch_time DESC 
+      LIMIT 1
+    `;
+    const result = await db.query(query, [instrument, timeframe, epochTime]);
+    return result.rows[0] || null;
+  }
+
+  async updateOIInterpretations(updates: Array<{ id: number; interpretation: string }>): Promise<void> {
+    if (updates.length === 0) return;
+
+    // Build a batch update query using CASE statements for better performance
+    const ids = updates.map(u => u.id).join(',');
+    const caseStatements = updates.map(u => `WHEN ${u.id} THEN '${u.interpretation}'`).join(' ');
+    
+    const query = `
+      UPDATE candles 
+      SET oi_interpretation = CASE id ${caseStatements} END
+      WHERE id IN (${ids})
+    `;
+
+    await db.query(query);
   }
 }

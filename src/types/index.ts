@@ -6,8 +6,26 @@ export type CandleData = [
   number, // low
   number, // close
   number, // volume
-  number // open interest
+  number  // open interest
 ];
+
+// OI Interpretation enum
+export type OIInterpretation = 
+  | 'LONG_BUILDUP' 
+  | 'SHORT_BUILDUP' 
+  | 'LONG_UNWINDING' 
+  | 'SHORT_COVERING'
+  | 'INCONCLUSIVE';
+
+// OI Analysis result
+export interface OIAnalysis {
+  interpretation: OIInterpretation;
+  priceChange: number;
+  oiChange: number;
+  priceDirection: 'UP' | 'DOWN' | 'FLAT';
+  oiDirection: 'UP' | 'DOWN' | 'FLAT';
+  confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+}
 
 // Database models
 export interface Candle {
@@ -21,6 +39,7 @@ export interface Candle {
   close_price: number;
   volume: number;
   open_interest: number;
+  oi_interpretation?: OIInterpretation;
   created_at: Date;
 }
 

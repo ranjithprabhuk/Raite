@@ -288,4 +288,93 @@ export const historicalDataController = new Elysia({ prefix: '/candles' })
         description: 'Delete candle data for an instrument, optionally filtered by timeframe',
       },
     }
+  )
+  .post(
+    '/:instrument/analyze-oi',
+    async ({ params, query, historicalDataService }) => {
+      try {
+        const { instrument } = params;
+        const { timeframe, batchSize } = query;
+
+        if (!timeframe) {
+          return {
+            success: false,
+            error: 'Timeframe is required',
+            message: 'Please specify a timeframe',
+          };
+        }
+
+        const result = await historicalDataService.analyzeAndUpdateOIInterpretations(
+          instrument, 
+          timeframe, 
+          batchSize || 1000
+        );
+
+        return {
+          success: true,
+          data: result,
+          message: `Analyzed and updated OI interpretations for ${instrument}`,
+        };
+      } catch (error: any) {
+        return {
+          success: false,
+          error: error.message,
+          message: 'Failed to analyze OI interpretations',
+        };
+      }
+    },
+    {
+      params: t.Object({
+        instrument: t.String({ minLength: 1, maxLength: 50 }),
+      }),
+      query: t.Object({
+        timeframe: t.String({
+          pattern: '^(1m|3m|5m|15m|30m|1h|2h|4h|6h|8h|12h|1d|3d|1w|1M)$',
+        }),
+        batchSize: t.Optional(t.Numeric({ minimum: 100, maximum: 5000 })),
+      }),
+      detail: {
+        tags: ['Historical Data'],
+        summary: 'Analyze OI interpretations',
+        description: 'Analyze and update Open Interest interpretations for all candles of an instrument',
+      },
+    }
+  )
+  .get(
+    '/oi-analysis/:candleId',
+    async ({ params, historicalDataService }) => {
+      try {
+        const { candleId } = params;
+        const analysis = await historicalDataService.getOIAnalysis(parseInt(candleId));
+
+        if (!analysis) {
+          return {
+            success: false,
+            error: 'Analysis not found',
+            message: 'Could not find OI analysis for the specified candle',
+          };
+        }
+
+        return {
+          success: true,
+          data: analysis,
+        };
+      } catch (error: any) {
+        return {
+          success: false,
+          error: error.message,
+          message: 'Failed to retrieve OI analysis',
+        };
+      }
+    },
+    {
+      params: t.Object({
+        candleId: t.String({ pattern: '^[0-9]+$' }),
+      }),
+      detail: {
+        tags: ['Historical Data'],
+        summary: 'Get OI analysis for candle',
+        description: 'Get Open Interest analysis for a specific candle compared to its previous candle',
+      },
+    }
   );

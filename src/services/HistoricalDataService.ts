@@ -1,5 +1,5 @@
 import { CandleRepository } from '@/repositories/CandleRepository';
-import type { CandleData, CandleQueryParams, Candle } from '@/types';
+import type { CandleData, CandleQueryParams, Candle, OIInterpretation, OIAnalysis } from '@/types';
 import { ValidationError } from '@/types';
 
 export class HistoricalDataService {
@@ -14,7 +14,83 @@ export class HistoricalDataService {
     this.validateTimeframe(timeframe);
     this.validateCandles(candles);
 
-    await this.candleRepository.insertCandles(instrument, timeframe, candles);
+    // Get existing candles to calculate OI interpretations for new candles
+    const existingCandles = await this.candleRepository.getCandles(instrument, { 
+      timeframe,
+      limit: 10 // Get recent candles for context
+    });
+
+    // Sort existing candles by epoch time
+    const sortedExistingCandles = existingCandles.sort((a, b) => a.epoch_time - b.epoch_time);
+
+    // Prepare candles with OI interpretations
+    const candlesWithOI: Array<{
+      candleData: CandleData;
+      oiInterpretation?: OIInterpretation;
+    }> = [];
+
+    // Sort new candles by epoch time
+    const sortedNewCandles = candles.sort((a, b) => a[0] - b[0]); // Sort by epoch time
+
+    for (let i = 0; i < sortedNewCandles.length; i++) {
+      const currentCandleData = sortedNewCandles[i];
+      let oiInterpretation: OIInterpretation | undefined;
+
+      // Find the previous candle for OI interpretation calculation
+      let previousCandle: Candle | undefined;
+
+      if (i === 0) {
+        // For the first new candle, look in existing candles
+        const lastExistingCandle = sortedExistingCandles[sortedExistingCandles.length - 1];
+        if (lastExistingCandle && lastExistingCandle.epoch_time < currentCandleData[0]) {
+          previousCandle = lastExistingCandle;
+        }
+      } else {
+        // For subsequent candles, use the previous new candle
+        const prevCandleData = sortedNewCandles[i - 1];
+        previousCandle = {
+          id: 0, // Temporary ID
+          instrument,
+          timeframe,
+          epoch_time: prevCandleData[0],
+          open_price: prevCandleData[1],
+          high_price: prevCandleData[2],
+          low_price: prevCandleData[3],
+          close_price: prevCandleData[4],
+          volume: prevCandleData[5],
+          open_interest: prevCandleData[6],
+          created_at: new Date()
+        } as Candle;
+      }
+
+      // Calculate OI interpretation if we have a previous candle
+      if (previousCandle) {
+        const currentCandle: Candle = {
+          id: 0, // Temporary ID
+          instrument,
+          timeframe,
+          epoch_time: currentCandleData[0],
+          open_price: currentCandleData[1],
+          high_price: currentCandleData[2],
+          low_price: currentCandleData[3],
+          close_price: currentCandleData[4],
+          volume: currentCandleData[5],
+          open_interest: currentCandleData[6],
+          created_at: new Date()
+        } as Candle;
+
+        const oiAnalysis = this.calculateOIInterpretation(previousCandle, currentCandle);
+        oiInterpretation = oiAnalysis.interpretation;
+      }
+
+      candlesWithOI.push({
+        candleData: currentCandleData,
+        oiInterpretation
+      });
+    }
+
+    // Insert candles with OI interpretations
+    await this.candleRepository.insertCandlesWithOI(instrument, timeframe, candlesWithOI);
   }
 
   async getCandles(instrument: string, params: CandleQueryParams): Promise<Candle[]> {
@@ -28,8 +104,8 @@ export class HistoricalDataService {
       throw new ValidationError('From date cannot be after to date');
     }
 
-    if (params.limit && (params.limit <= 0 || params.limit > 10000)) {
-      throw new ValidationError('Limit must be between 1 and 10000');
+    if (params.limit && (params.limit <= 0 || params.limit > 100000)) {
+      throw new ValidationError('Limit must be between 1 and 100000');
     }
 
     return await this.candleRepository.getCandles(instrument, params);
@@ -111,6 +187,140 @@ export class HistoricalDataService {
       lastCandle,
       priceRange: { min, max },
     };
+  }
+
+  /**
+   * Analyze and update OI interpretations for candles
+   * This method should be called after storing new candles to compute OI analysis
+   */
+  async analyzeAndUpdateOIInterpretations(
+    instrument: string, 
+    timeframe: string, 
+    batchSize: number = 1000
+  ): Promise<{ updated: number; total: number }> {
+    this.validateInstrument(instrument);
+    this.validateTimeframe(timeframe);
+
+    // Get all candles for the instrument/timeframe ordered by time
+    const candles = await this.candleRepository.getCandles(instrument, { 
+      timeframe,
+      limit: 100000 // Get all candles, will paginate if needed
+    });
+
+    if (candles.length < 2) {
+      return { updated: 0, total: candles.length };
+    }
+
+    // Sort by epoch time to ensure proper order
+    const sortedCandles = candles.sort((a, b) => a.epoch_time - b.epoch_time);
+    let updatedCount = 0;
+
+    // Process candles in batches starting from the second candle
+    for (let i = 1; i < sortedCandles.length; i += batchSize) {
+      const batch = sortedCandles.slice(i, i + batchSize);
+      const updates: Array<{ id: number; interpretation: OIInterpretation }> = [];
+
+      for (const currentCandle of batch) {
+        const currentIndex = sortedCandles.findIndex(c => c.id === currentCandle.id);
+        if (currentIndex === 0) continue; // Skip first candle
+
+        const previousCandle = sortedCandles[currentIndex - 1];
+        const oiAnalysis = this.calculateOIInterpretation(previousCandle, currentCandle);
+        
+        updates.push({
+          id: currentCandle.id,
+          interpretation: oiAnalysis.interpretation
+        });
+      }
+
+      // Batch update the database
+      if (updates.length > 0) {
+        await this.candleRepository.updateOIInterpretations(updates);
+        updatedCount += updates.length;
+      }
+    }
+
+    return { updated: updatedCount, total: sortedCandles.length };
+  }
+
+  /**
+   * Calculate OI interpretation for a single candle compared to the previous one
+   */
+  calculateOIInterpretation(previousCandle: Candle, currentCandle: Candle): OIAnalysis {
+    // Calculate price and OI changes
+    const priceChange = currentCandle.close_price - previousCandle.close_price;
+    const oiChange = currentCandle.open_interest - previousCandle.open_interest;
+    
+    // Calculate percentage changes for better analysis
+    const priceChangePercent = (priceChange / previousCandle.close_price) * 100;
+    const oiChangePercent = previousCandle.open_interest > 0 
+      ? (oiChange / previousCandle.open_interest) * 100 
+      : 0;
+
+    // Define thresholds for significant changes
+    const PRICE_THRESHOLD = 0.1; // 0.1% price change threshold
+    const OI_THRESHOLD = 1.0; // 1% OI change threshold
+
+    // Determine directions
+    const priceDirection: 'UP' | 'DOWN' | 'FLAT' = 
+      Math.abs(priceChangePercent) < PRICE_THRESHOLD ? 'FLAT' :
+      priceChange > 0 ? 'UP' : 'DOWN';
+
+    const oiDirection: 'UP' | 'DOWN' | 'FLAT' = 
+      Math.abs(oiChangePercent) < OI_THRESHOLD ? 'FLAT' :
+      oiChange > 0 ? 'UP' : 'DOWN';
+
+    // Determine interpretation based on price and OI movements
+    let interpretation: OIInterpretation;
+    let confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+
+    if (priceDirection === 'UP' && oiDirection === 'UP') {
+      interpretation = 'LONG_BUILDUP';
+      confidence = Math.abs(priceChangePercent) > 0.5 && Math.abs(oiChangePercent) > 2 ? 'HIGH' : 
+                   Math.abs(priceChangePercent) > 0.2 && Math.abs(oiChangePercent) > 1 ? 'MEDIUM' : 'LOW';
+    } else if (priceDirection === 'DOWN' && oiDirection === 'UP') {
+      interpretation = 'SHORT_BUILDUP';
+      confidence = Math.abs(priceChangePercent) > 0.5 && Math.abs(oiChangePercent) > 2 ? 'HIGH' : 
+                   Math.abs(priceChangePercent) > 0.2 && Math.abs(oiChangePercent) > 1 ? 'MEDIUM' : 'LOW';
+    } else if (priceDirection === 'DOWN' && oiDirection === 'DOWN') {
+      interpretation = 'LONG_UNWINDING';
+      confidence = Math.abs(priceChangePercent) > 0.5 && Math.abs(oiChangePercent) > 2 ? 'HIGH' : 
+                   Math.abs(priceChangePercent) > 0.2 && Math.abs(oiChangePercent) > 1 ? 'MEDIUM' : 'LOW';
+    } else if (priceDirection === 'UP' && oiDirection === 'DOWN') {
+      interpretation = 'SHORT_COVERING';
+      confidence = Math.abs(priceChangePercent) > 0.5 && Math.abs(oiChangePercent) > 2 ? 'HIGH' : 
+                   Math.abs(priceChangePercent) > 0.2 && Math.abs(oiChangePercent) > 1 ? 'MEDIUM' : 'LOW';
+    } else {
+      interpretation = 'INCONCLUSIVE';
+      confidence = 'LOW';
+    }
+
+    return {
+      interpretation,
+      priceChange,
+      oiChange,
+      priceDirection,
+      oiDirection,
+      confidence
+    };
+  }
+
+  /**
+   * Get OI analysis for a specific candle
+   */
+  async getOIAnalysis(candleId: number): Promise<OIAnalysis | null> {
+    const candle = await this.candleRepository.getCandleById(candleId);
+    if (!candle) return null;
+
+    const previousCandle = await this.candleRepository.getPreviousCandle(
+      candle.instrument, 
+      candle.timeframe, 
+      candle.epoch_time
+    );
+    
+    if (!previousCandle) return null;
+
+    return this.calculateOIInterpretation(previousCandle, candle);
   }
 
   private validateInstrument(instrument: string): void {
